@@ -1,0 +1,676 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 200
+---
+
+Estimating parameters of a population model using approximate Bayesian computation
+
+Loading all necessary packages:
+
+```{r genpack, message=FALSE, error=FALSE, warning=FALSE, echo=FALSE}
+# install and load libraries if necessary:
+genr_packs <- c("ggplot2", "gridExtra", "MASS", "dplyr", "coda", "grid")
+for (package in genr_packs) {
+  if (!requireNamespace(package, quietly = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+  }
+  else
+    library(package, character.only = TRUE, quietly = TRUE)
+}
+```
+
+```{r}
+coral_data <- read.csv("data_project.csv")
+
+
+summary_stats_table <- function(data) {
+  mean_coral <- mean(data$coral)
+  sd_coral <- sd(data$coral)
+  mean_starfish <- mean(data$starfish)
+  sd_starfish <- sd(data$starfish)
+  
+  summary_table <- data.frame(
+    Species = c("Coral Reef", "Crown of Thorns Starfish"),
+    Mean = c(mean_coral, mean_starfish),
+    Std.Deviation = c(sd_coral, sd_starfish)
+  )
+  
+  return(summary_table)
+}
+
+stats <- summary_stats_table(coral_data)
+stats
+```
+
+```{r}
+summary(coral_data)
+```
+
+```{r, fig.width=10}
+ggplot(coral_data, aes(x = times)) +
+  geom_line(aes(y=coral, color="Coral Reef"), linetype="solid", lwd=1) + 
+  geom_point(aes(y=coral), size = 3, shape=19,  color="blue3") +
+  geom_line(aes(y=starfish, color="Crown of Thorns Starfish"), linetype="dashed", lwd=1) + 
+  geom_point(aes(y = starfish), size = 3, shape=18, color="red") +
+  labs(title = "Coral and Starfish population over time (observed)", x = "Timeline (years)", y = "Species population") +
+  scale_color_manual(values = c("Coral Reef" = "blue3", "Crown of Thorns Starfish" = "red")) +
+  scale_x_continuous(breaks = coral_data$times) +
+  theme()
+```
+
+Given, let $$C(t) \ \text{as the number of coral alive at time} \ t, and \\ S(t) \ \text{as the number of crown of thorn starfish alive at time} \ t.$$
+
+The given transition probabilities represent the changes in the system in a small time interval $t+\Delta$ are:
+
+$$
+\begin{align*}
+P(C = c + 1, \ S = s) & = \mu c \Delta_t + o(\Delta_t) \quad \text{(Birth event for coral)} \\
+P(C = c - 1, \ S = s + 1) & = \delta s c \Delta_t + o(\Delta_t) \quad \text{(Predator event of starfish)} \\
+P(C = c, \ S = s - 1) & = \nu s \Delta_t + o(\Delta_t) \quad \text{(Death event for starfish)}
+\end{align*}
+$$
+
+$$\frac{dC}{dt} = \mu C − \delta CS$$ $$\frac{dS}{dt} = \nu S$$
+
+C represents the prey population (coral). S represents the predator population (starfish). μ is the birth rate of the prey. δ is the predation rate, affecting both the prey and predator populations. ν
+is the death rate of the predators.
+
+Rate at which event happens: $\mu c \Delta_t + \delta s c \Delta_t + \nu s \Delta_t$
+
+Birth with probability: $\mu c \Delta_t / \mu c \Delta_t + \delta s c \Delta_t + \nu s \Delta_t$ Predatory event with probability:
+$delta s c \Delta_t / \mu c \Delta_t + \delta s c \Delta_t + \nu s \Delta_t$ Death with probability: $\nu s \Delta_t / \mu c \Delta_t + \delta s c \Delta_t + \nu s \Delta_t$
+
+The inference task for this problem is to estimate the unknown parameters for the model, θ = (μ, δ, ν) using the observed data. The team has told you that uniform priors over zero to one would be
+suitable for all parameters.
+
+Let the observed data be denoted by y.
+
+By Bayesian Inference, the posterior distribution: $$p(\theta | y) \propto p(y | \theta) \cdot p(\theta)$$ Likelihood function: $$P(y | \theta) = \prod_{i=1}^{n} P(C_i, S_i | \theta)$$ Prior
+distributions: $$P(\mu) \sim U(0, 1),\\P(\delta) \sim U(0, 1),\\P(\nu) \sim U(0, 1)$$
+
+Given some choices of θ, you can simulate data from this model using the stochastic simulation algorithm (SSA), commonly referred to as the Gillespie Algorithm.
+
+```         
+sim_Gillespie <- function(mu, delta, nu, C0 = 34, S0= 16, times = seq(from = 0,to = 20, by = 2)){
+  x = c(C0, S0)
+  states = matrix(0, nrow = length(times), length(x))
+  states[1,] <- x
+
+  for(i in 2:length(times)){
+    x <- smfsb::stepLVc(x0 = x, t0 = times[i-1], deltat = times[i] - times[i-1], th = c(mu, delta, nu))
+    states[i, ] <- x
+  }
+  return(data.frame(times=times, coral = states[,1], starfish = states[,2]))
+}
+```
+
+```{r}
+source("sim_Gillespie.R")
+```
+
+Exploring data with a single simulation:
+
+```{r}
+set.seed(1)
+mu <- 0.6  # Birth rate for coral
+delta <- 0.01  # Predator rate for starfish
+nu <- 0.4  # Death rate for starfish
+
+obsY <- sim_Gillespie(mu, delta, nu)
+obsY
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(obsY$times, obsY$coral, type="o")
+plot(obsY$times, obsY$starfish, type="o")
+```
+
+```{r, fig.width=11}
+ggplot(obsY, aes(x = times)) +
+  geom_line(aes(y=coral, color="Coral Reef (simulated)"), linetype="solid", lwd=1) + 
+  geom_point(aes(y=coral), size = 3, shape=19,  color="blue3") +
+  geom_line(aes(y=starfish, color="Crown of Thorns Starfish (simulated)"), linetype="dashed", lwd=1) + 
+  geom_point(aes(y = starfish), size = 3, shape=18, color="red") +
+  labs(title = "Coral and Starfish population (simulated)", x = "Timeline (years)", y = "Simulated species population") +
+  scale_color_manual(values = c("Coral Reef (simulated)" = "blue3", "Crown of Thorns Starfish (simulated)" = "red")) +
+  scale_x_continuous(breaks = obsY$times) +
+  theme()
+```
+
+ABC Rejection
+
+```{r, warning=False, fig.height=5, fig.width=15}
+set.seed(1)
+# Number of simulations
+M <- 10000
+
+# parameters of the model:
+mu <- runif(M, 0, 1)
+delta <- runif(M, 0, 1)
+nu <- runif(M, 0, 1)
+
+# parameter vector
+theta <- matrix(c(mu, delta, nu), ncol = 3)
+ret_index <- vector(length=M)
+all_distances <- numeric()
+
+for (i in 1:M) {
+  sg_sim <- sim_Gillespie(theta[i,1], theta[i,2], theta[i,3])
+  distances <- sqrt(sum((coral_data - sg_sim)^2))
+  all_distances <- c(all_distances, distances)
+}
+eps <- quantile(all_distances, 0.05)
+keeps <- all_distances < eps
+
+prior_dist <- cbind(mu, delta, nu)
+prior_df <- data.frame(mu = prior_dist[,1], delta = prior_dist[,2], nu = prior_dist[,3])
+
+posterior_dist <- prior_dist[keeps,]
+posteriors_df <- data.frame(mu = posterior_dist[,1], delta = posterior_dist[,2], nu = posterior_dist[,3])
+
+plot_mu <- ggplot(prior_df,aes(x=mu)) +
+  geom_density(color="red") +
+  geom_density(data=posteriors_df,color="blue") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.75, y=0)) +
+  xlab(expression(mu)) + ylab("density")
+
+plot_delta <- ggplot(prior_df,aes(x=delta)) +
+  geom_density(color="red") +
+  geom_density(data=posteriors_df,color="blue") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.05, y=0)) +
+  xlab(expression(delta)) + ylab("density")
+
+plot_nu <- ggplot(prior_df,aes(x=nu)) +
+  geom_density(color="red") +
+  geom_density(data=posteriors_df,color="blue") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.03, y=0)) +
+  xlab(expression(nu)) + ylab("density")
+
+grid.arrange(plot_mu, plot_delta, plot_nu, ncol=3, nrow=1)
+```
+
+```{r}
+set.seed(1)
+# Number of simulations
+M <- 10000
+
+# parameters of the model:
+mu <- runif(M, 0, 1)
+delta <- runif(M, 0, 1)
+nu <- runif(M, 0, 1)
+
+# parameter vector
+theta <- matrix(c(mu, delta, nu), ncol = 3)
+
+theta_samples <- list()
+# Simulating theta samples:
+for (i in 1:M) {
+  theta_samples[[i]] <- sim_Gillespie(theta[i,1], theta[i,2], theta[i,3]) #full data / no data summarisation 
+}
+#theta_samples_df <- do.call(rbind, theta_samples)
+
+list_length <- length(theta_samples)
+distances_real <- vector(length = M)
+#distances_sample <- vector(length = M)
+
+# Euclidean distances
+for (i in 1:min(M, list_length)) {
+  distances_real[i] <- sqrt(sum((coral_data - theta_samples[[i]])^2)) #coral_data
+  #distances_sample[i] <- sum(obsY - theta_samples[[i]])^2 #simulated data
+}
+
+# Selecting top 5% of simulations
+eps_r <- quantile(distances_real, 0.05, na.rm=TRUE)
+keep_indR <- distances_real < eps_r
+
+#eps_s <- quantile(distances_sample, 0.05, na.rm=TRUE)
+#keep_indS <- distances_sample < eps_s
+
+#parameters drawn from Prior
+priors <- cbind(mu, delta, nu)
+priors_df <- data.frame(mu = priors[,1], delta = priors[,2], nu = priors[,3])
+
+#parameters drawn from Posterior
+post_r <- priors[keep_indR,]
+post_rdf <- data.frame(mu = post_r[,1], delta = post_r[,2], nu = post_r[,3])
+
+#post_s <- priors[keep_indS,]
+#post_sdf <- data.frame(mu = post_s[,1], delta = post_s[,2], nu = post_s[,3])
+```
+
+
+```{r, warning=False, fig.height=5, fig.width=15}
+#Comparing prior and posterior:
+plot_mu <- ggplot() +
+  geom_density(data=priors_df, aes(x=mu), color="blue", linetype="dashed") +
+  geom_density(data=post_rdf, aes(x=mu), color="red") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.75, y=0)) +
+  xlab(expression(mu)) + ylab("density") +
+  ggtitle("Posterior VS Prior for mu (coral birth rate)")
+
+plot_delta <- ggplot() +
+  geom_density(data=priors_df, aes(x=delta), color="blue", linetype="dashed") +
+  geom_density(data=post_rdf, aes(x=delta), color="red") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.05, y=0)) +
+  xlab(expression(delta)) +
+  ggtitle("Posterior VS Prior for delta (predatory event)")
+
+plot_nu <- ggplot() +
+  geom_density(data=priors_df, aes(x=nu), color="blue", linetype="dashed") +
+  geom_density(data=post_rdf, aes(x=nu), color="red") + #geom_density(data=post_sdf,color="black") +
+  geom_point(aes(x=0.03, y=0)) +
+  xlab(expression(nu)) +
+  ggtitle("Posterior VS Prior for nu (starfish death rate)")
+
+grid.arrange(plot_mu, plot_delta, plot_nu, ncol=3, nrow=1)
+```
+
+```{r}
+mu_values <- post_rdf$mu
+breaks <- seq(min(mu_values), max(mu_values), length.out = 20)
+mu_bins <- cut(mu_values, breaks = breaks, include.lowest = TRUE)
+mu_counts <- table(mu_bins)
+most_common_MU <- names(mu_counts)[which.max(mu_counts)]
+#mu_counts
+
+del_values <- post_rdf$delta
+breaks <- seq(min(del_values), max(del_values), length.out = 25)
+del_bins <- cut(del_values, breaks = breaks, include.lowest = TRUE)
+del_counts <- table(del_bins)
+most_common_DEL <- names(del_counts)[which.max(del_counts)]
+#del_counts
+
+nu_values <- post_rdf$nu
+breaks <- seq(min(nu_values), max(nu_values), length.out = 30)
+nu_bins <- cut(nu_values, breaks = breaks, include.lowest = TRUE)
+nu_counts <- table(nu_bins)
+most_common_NU <- names(nu_counts)[which.max(nu_counts)]
+#nu_counts
+
+cat("Most common MU bin:", most_common_MU, "\n")
+cat("Most common DEL bin:", most_common_DEL, "\n")
+cat("Most common NU bin:", most_common_NU, "\n")
+```
+
+```{r}
+summary(all_distances)
+```
+
+```{r}
+summary(distances_real)
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=10, fig.height=5}
+
+ggplot(data.frame(mu = post_rdf[,1], delta = post_rdf[,2], nu = post_rdf[,3], M = 1:length(post_rdf[,1])), aes(x = M)) +
+  geom_line(aes(y = mu, color = "mu"), linetype = "solid") +
+  geom_line(aes(y = delta, color = "delta"), linetype = "solid") +
+  geom_line(aes(y = nu, color = "nu"), linetype = "solid") +
+  ylab("") +
+  xlab("Iteration") +
+  scale_color_manual(name = "Parameters: ", values = c("mu" = "blue", "delta" = "orange", "nu" = "green3")) +
+  theme(legend.position="right") +
+  ggtitle("Parameter inference by ABC rejection")
+```
+
+```{r}
+mcmc_abcr <- as.matrix(post_rdf)
+mcmc_chains_abcr <- mcmc(mcmc_abcr)
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+#plot traceplots
+par(mfrow=c(1,3))
+traceplot(mcmc_chains_abcr[,1], main = paste("Trace Plot for mu"), col = "blue")
+traceplot(mcmc_chains_abcr[,2], main = paste("Trace Plot for delta"), col = "orange")
+traceplot(mcmc_chains_abcr[,3], main = paste("Trace Plot for nu"), col = "green3")
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=10, fig.height=5}
+# Plot Lag
+lag.plot(mcmc_chains_abcr[,1], main = "Lag Plot for mu", diag.col = "red")
+lag.plot(mcmc_chains_abcr[,2], main = "Lag Plot for delta", diag.col = "red")
+lag.plot(mcmc_chains_abcr[,3], main = "Lag Plot for nu", diag.col = "red")
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot ACF
+par(mfrow=c(1,3))
+acf(mcmc_chains_abcr[,1], main = paste("ACF for mu"))
+acf(mcmc_chains_abcr[,2], main = paste("ACF for delta"))
+acf(mcmc_chains_abcr[,3], main = paste("ACF for nu"))
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot Density
+par(mfrow=c(1,3))
+plot(density(mcmc_chains_abcr[,1]), lwd=2, col=4, main = paste("Density Plot for mu"))
+plot(density(mcmc_chains_abcr[,2]), lwd=2, col=7, main = paste("Density Plot for delta"))
+plot(density(mcmc_chains_abcr[,3]), lwd=2, col=3, main = paste("Density Plot for nu"))
+```
+
+```{r, fig.height=5, fig.width=10}
+df_list <- list()
+
+# Generate 100 data frames with random data
+for (i in 1:100) {
+  g <- sim_Gillespie(post_rdf[i,1], post_rdf[i,2], post_rdf[i,3])
+  df_list[[i]] <- g
+}
+
+combined_df <- do.call(rbind, df_list)
+
+ggplot(combined_df, aes(x = times)) +
+  geom_line(aes(y=coral, color="Coral Reef (simulated)"), linetype="solid", lwd=1, alpha=0.3) + 
+  geom_point(aes(y=coral), size = 2, shape=19,  color="blue3") +
+  geom_line(aes(y=starfish, color="Crown of Thorns Starfish (simulated)"), linetype="dashed", lwd=1, alpha=0.3) + 
+  geom_point(aes(y = starfish), size = 2, shape=18, color="red") +
+  labs(title = "Coral and Starfish population (simulated)", x = "Timeline (years)", y = "Simulated species population") +
+  scale_color_manual(values = c("Coral Reef (simulated)" = "blue3", "Crown of Thorns Starfish (simulated)" = "red")) +
+  scale_x_continuous(breaks = combined_df$times) +
+  theme()
+```
+
+
+
+**MCMC ABC**
+
+```{r}
+#post_rdf
+
+df_nona <- post_rdf %>%
+  mutate(across(everything(), ~ifelse(is.na(.), 0, .)))
+
+log_values <- log(df_nona[, c(1, 2, 3)] / (1 - df_nona[, c(1, 2, 3)]))
+transp_theta <- as.data.frame(log_values)
+
+covm_post <- cov(transp_theta)
+covm_post
+cov_list <- c(covm_post)
+```
+
+```{r}
+theta_current <- c(0.65, 0.04, 0.03)
+cov_list
+cov_2rw <- matrix(cov_list, 3, 3)
+
+theta_trans_ct <- c(log((theta_current[1])/(1-theta_current[1])), 
+                      log(theta_current[2]/(1-theta_current[2])), 
+                      log(theta_current[3]/(1-theta_current[3])))
+theta_trans_ct
+
+theta_trans_pr <- mvrnorm(1,theta_trans_ct, cov_2rw)
+theta_trans_pr
+```
+
+```{r ABCMCMC, include=FALSE}
+set.seed(1)
+
+M <- 10000 # Number of MCMC iterations
+tol <- 316 # ABC tolerance
+
+theta_current <- c(0.65, 0.04, 0.03)
+cov_2rw <- matrix(cov_list, 3, 3)
+
+samps <- matrix(0, M, 3)
+
+for (i in 1:M) { # propose on the transformed space
+  #print(theta_current)
+  theta_trans_ct <- c(log(theta_current[1]/(1 - theta_current[1])), 
+                      log(theta_current[2]/(1 - theta_current[2])), 
+                      log(theta_current[3]/(1 - theta_current[3])))
+  
+  theta_trans_pr <- mvrnorm(1, theta_trans_ct, cov_2rw)
+
+  theta_prop <- c(1/(1 + exp(-theta_trans_pr[1])), 
+                  1/(1 + exp(-theta_trans_pr[2])), 
+                  1/(1 + exp(-theta_trans_pr[3])))
+
+  # compute prior densities on transformed space
+  log_prior_curr <- -theta_trans_ct[1] - 2*log(1 + exp(-theta_trans_ct[1])) - 
+    theta_trans_ct[2] - 2*log(1 + exp(-theta_trans_ct[2])) - 
+    theta_trans_ct[3] - 2*log(1 + exp(-theta_trans_ct[3]))
+
+  log_prior_prop <- -theta_trans_pr[1] - 2*log(1 + exp(-theta_trans_pr[1])) - 
+    theta_trans_pr[2] - 2*log(1 + exp(-theta_trans_pr[2])) - 
+    theta_trans_pr[3] - 2*log(1 + exp(-theta_trans_pr[3]))
+  
+  
+  u <- runif(1)
+  if (u > exp(log_prior_prop - log_prior_curr)) { # reject early
+    samps[i,] <- theta_current
+    next # skipping to next iteration
+  }
+  
+  # Simulate data from the model
+  x <- sim_Gillespie(theta_prop[1], theta_prop[2], theta_prop[3])
+  distances <- sqrt(sum((coral_data - x)^2))
+  #distances <- ifelse(is.na(distances), 0, distances)
+  if (distances <= tol) {
+    theta_current <- theta_prop
+  }
+  samps[i,] = theta_current
+  print(i)
+}
+```
+
+```{r}
+dim(samps)
+```
+
+```{r}
+# Check number samples
+coda::effectiveSize(samps)
+```
+
+```{r}
+# Compare rejection and MCMC ABC
+postr_abc_df <- data.frame(mu = samps[seq(1,M,10),1], 
+                           delta = samps[seq(1,M,10),2], 
+                           nu = samps[seq(1,M,10),3])
+
+postr_abc_df
+```
+
+```{r warning=False, fig.height=5, fig.width=15}
+plot_mc_p <- ggplot() + 
+  geom_density(data=postr_abc_df, aes(x=mu), color="red") + 
+  geom_density(data=post_rdf, aes(x=mu), color="blue", linetype="dashed") +
+  geom_density(data=priors_df, aes(x=mu), color="orange3", linetype="dashed") +
+  theme_minimal() +
+  geom_point(aes(x=0.75, y=0)) +
+  xlab(expression(mu)) + ylab("density") +
+  ggtitle("Posterior distributions for mu")
+
+plot_mc_mu <- ggplot() +
+  geom_density(data=postr_abc_df, aes(x=delta), color="red") +
+  geom_density(data=post_rdf, aes(x=delta), color="blue", linetype="dotdash") +
+  geom_density(data=priors_df, aes(x=delta), color="orange3", linetype="dashed") +
+  theme_minimal() +
+  geom_point(aes(x=0.05, y=0)) +
+  xlab(expression(delta)) +
+  ggtitle("Posterior distributions for delta")
+
+plot_mc_phi <- ggplot() +
+  geom_density(data=postr_abc_df, aes(x=nu), color="red") +
+  geom_density(data=post_rdf, aes(x=nu), color="blue", linetype="dashed") +
+  geom_density(data=priors_df, aes(x=nu), color="orange3", linetype="dashed") +
+  theme_minimal() +
+  geom_point(aes(x=0.03, y=0)) +
+  xlab(expression(nu))+
+  ggtitle("Posterior distributions for nu")
+
+grid.arrange(plot_mc_p, plot_mc_mu, plot_mc_phi, ncol=3, nrow=1, top = textGrob("ABC rejection VS ABC MCMC", gp=gpar(fontsize=16,font=2)))
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=10, fig.height=5}
+# Plot MCMC samples
+ggplot(data.frame(mu = samps[,1], delta = samps[,2], nu = samps[,3], M = 1:length(samps[,1])), aes(x = M)) +
+  geom_line(aes(y = mu, color = "mu"), linetype = "solid") +
+  geom_line(aes(y = delta, color = "delta"), linetype = "solid") +
+  geom_line(aes(y = nu, color = "nu"), linetype = "solid") +
+  ylab("") +
+  xlab("Iteration") +
+  scale_color_manual(name = "Parameters: ", values = c("mu" = "blue", "delta" = "orange", "nu" = "green3")) +
+  theme(legend.position="bottom")
+```
+
+```{r}
+mcmc_abc <- as.matrix(samps)
+mcmc_chains_abc <- mcmc(mcmc_abc)
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+par(mfrow=c(1,3))
+traceplot(mcmc_chains_abc[,1], main = paste("Trace Plot for mu"), col = "blue")
+traceplot(mcmc_chains_abc[,2], main = paste("Trace Plot for delta"), col = "orange")
+traceplot(mcmc_chains_abc[,3], main = paste("Trace Plot for nu"), col = "green3")
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot Lag
+lag.plot(mcmc_chains_abc[,1], main = "Lag Plot for mu", diag.col = "red", )
+lag.plot(mcmc_chains_abc[,2], main = "Lag Plot for delta", diag.col = "red")
+lag.plot(mcmc_chains_abc[,3], main = "Lag Plot for nu", diag.col = "red")
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot ACF
+par(mfrow=c(1,3))
+acf(mcmc_chains_abc[,1], main = paste("ACF for mu"))
+acf(mcmc_chains_abc[,2], main = paste("ACF for delta"))
+acf(mcmc_chains_abc[,3], main = paste("ACF for nu"))
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot Density
+par(mfrow=c(1,3))
+plot(density(mcmc_chains_abc[,1]), lwd=2, col=4, main = paste("Density Plot for mu"))
+plot(density(mcmc_chains_abc[,2]), lwd=2, col=7, main = paste("Density Plot for delta"))
+plot(density(mcmc_chains_abc[,3]), lwd=2, col=3, main = paste("Density Plot for nu"))
+```
+
+
+**SMC ABC MCMC**
+
+```{r}
+# Function to compute the prior density on transformed space
+log_prior <- function(theta_trans) {
+  return(-theta_trans[1] - 2 * log(1 + exp(-theta_trans[1])) - 
+           theta_trans[2] - 2 * log(1 + exp(-theta_trans[2])) - 
+           theta_trans[3] - 2 * log(1 + exp(-theta_trans[3])))
+}
+
+# Adaptive SMC Function
+adaptive_smc_abc <- function(M, tau, tol_init, theta_init, cov_2rw, obs_data) {
+  samps <- matrix(0, M, 3)
+  weights <- rep(1/M, M)
+  epsilons <- rep(tol_init, tau)
+  indkeep <- sample(1:M, M, replace = TRUE, prob = weights)
+  
+  for (t in 1:tau) {
+    theta_trans_ct <- log(theta_init/(1 - theta_init))
+    theta_trans_pr <- mvrnorm(M, theta_trans_ct, cov_2rw)
+    theta_prop <- 1/(1 + exp(-theta_trans_pr))
+    
+    # Compute prior densities on transformed space
+    log_prior_curr <- log_prior(theta_trans_ct)
+    log_prior_prop <- log_prior(theta_trans_pr)
+    
+    # Simulate data from the model
+    distances <- apply(theta_prop, 1, function(theta) {
+      sim_data <- sim_Gillespie(theta[1], theta[2], theta[3])
+      sqrt(sum((obs_data - sim_data)^2))
+    })
+    
+    epsilons[t] <- median(distances)
+    
+    ESS <- 1 / sum(weights^2) #adaptation step
+    print(ESS)
+    if (ESS < 316) { # Resample
+      indkeep <- sample(1:M, M, replace = TRUE, prob = weights)
+      weights <- rep(1/M, M)
+    }
+    
+    weights <- exp(-distances^2 / (2 * epsilons[t]^2))
+    weights <- weights / sum(weights)
+    samps <- theta_prop[indkeep,] #store samples
+    
+    if (t < tau) { # Update tolerance for the next iteration
+      quantile_75 <- quantile(distances, 0.05)
+      tol_scaling_factor <- 7
+      epsilons[t + 1] <- min(quantile_75 * tol_scaling_factor, tol_init)
+    }
+  }
+  return(list(samples = samps, weights = weights, epsilons = epsilons))
+}
+```
+
+
+```{r}
+set.seed(1)
+M <- 1000
+tau <- 10
+tol_init <- 316
+theta_init <- c(0.3, 0.8, 0.3)
+cov_2rw <- matrix(cov_list, 3, 3)
+
+abc_smc_result <- adaptive_smc_abc(M, tau, tol_init, theta_init, cov_2rw, coral_data)
+
+samps_smc <- abc_smc_result$samples
+#abc_smc_result$weights
+#abc_smc_result$epsilons
+```
+
+
+
+```{r, fig.width=10}
+# Plot MCMC samples
+ggplot(data.frame(mu = samps_smc[,1], delta = samps_smc[,2], nu = samps_smc[,3], M = 1:length(samps_smc[,1])), aes(x = M)) +
+  geom_line(aes(y = mu, color = "mu"), linetype = "solid") +
+  geom_line(aes(y = delta, color = "delta"), linetype = "solid") +
+  geom_line(aes(y = nu, color = "nu"), linetype = "solid") +
+  ylab("") +
+  xlab("Iteration") +
+  scale_color_manual(name = "Parameters: ", values = c("mu" = "blue", "delta" = "orange", "nu" = "green3")) +
+  theme(legend.position="bottom")
+```
+
+```{r}
+mcmc_abc_smc <- as.matrix(samps_smc)
+mcmc_chains_abcsmc <- mcmc(mcmc_abc_smc)
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+par(mfrow=c(1,3))
+traceplot(mcmc_chains_abcsmc[,1], main = paste("Trace Plot for mu"), col = "blue")
+traceplot(mcmc_chains_abcsmc[,2], main = paste("Trace Plot for delta"), col = "orange")
+traceplot(mcmc_chains_abcsmc[,3], main = paste("Trace Plot for nu"), col = "green3")
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot ACF
+par(mfrow=c(1,3))
+acf(mcmc_chains_abcsmc[,1], main = paste("ACF for mu"))
+acf(mcmc_chains_abcsmc[,2], main = paste("ACF for delta"))
+acf(mcmc_chains_abcsmc[,3], main = paste("ACF for nu"))
+```
+
+```{r, warning=FALSE, error=FALSE, fig.width=15, fig.height=5}
+# Plot Density
+par(mfrow=c(1,3))
+plot(density(mcmc_chains_abcsmc[,1]), lwd=2, col=4, main = paste("Density Plot for mu"))
+plot(density(mcmc_chains_abcsmc[,2]), lwd=2, col=7, main = paste("Density Plot for delta"))
+plot(density(mcmc_chains_abcsmc[,3]), lwd=2, col=3, main = paste("Density Plot for nu"))
+```
+
+```{r}
+
+
+```
+
+
